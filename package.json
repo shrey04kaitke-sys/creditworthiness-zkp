@@ -1,0 +1,39 @@
+{
+  "name": "creditworthiness-zkp",
+  "version": "1.0.0",
+  "description": "Blockchain-based creditworthiness verification system using Zero-Knowledge Proofs",
+  "main": "index.js",
+  "scripts": {
+    "test": "hardhat test",
+    "test:gas": "REPORT_GAS=true hardhat test",
+    "coverage": "hardhat coverage",
+    "compile": "hardhat compile",
+    "deploy:local": "hardhat run scripts/deploy.js --network hardhat",
+    "deploy:sepolia": "hardhat run scripts/deploy.js --network sepolia",
+    "deploy:mumbai": "hardhat run scripts/deploy.js --network mumbai",
+    "node": "hardhat node",
+    "clean": "hardhat clean",
+    "flatten": "hardhat flatten contracts/CreditworthinessRegistry.sol > flattened.sol"
+  },
+  "keywords": [
+    "blockchain",
+    "zero-knowledge-proofs",
+    "creditworthiness",
+    "smart-contracts",
+    "hardhat"
+  ],
+  "author": "Creditworthiness Team",
+  "license": "MIT",
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^4.0.0",
+    "@nomicfoundation/hardhat-ethers": "^3.0.5",
+    "hardhat": "^2.19.0",
+    "hardhat-gas-reporter": "^1.0.9",
+    "solidity-coverage": "^0.8.5"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "^5.0.0",
+    "ethers": "^6.9.0",
+    "dotenv": "^16.3.1"
+  }
+}
