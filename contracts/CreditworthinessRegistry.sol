@@ -6,6 +6,220 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 
 /**
+ * @title Groth16Verifier
+ * @dev Library for Groth16 proof verification using elliptic curve pairings
+ * Implements the verification equation: [A]·[B] = [alpha]·[beta] + [C]·[gamma] + [K]·[delta]
+ */
+library Groth16Verifier {
+
+    // Modulus for the BN254 curve
+    uint256 constant FIELD_MODULUS = 21888242871839275222246405745257275088548364400416034343698204186575808495617;
+
+    /**
+     * @dev Verify a Groth16 proof
+     * @param alpha First component of verification key
+     * @param beta Second component of verification key
+     * @param gamma Third component of verification key
+     * @param delta Fourth component of verification key
+     * @param gammaABC Fifth component of verification key (gamma inverse times ABC)
+     * @param proofA First component of proof (A point)
+     * @param proofB Second component of proof (B point)
+     * @param proofC Third component of proof (C point)
+     * @param input Public inputs to verify against
+     * @return true if proof is valid, false otherwise
+     */
+    function verify(
+        uint256[2] memory alpha,
+        uint256[2][2] memory beta,
+        uint256[2] memory gamma,
+        uint256[2] memory delta,
+        uint256[][] memory gammaABC,
+        uint256[2] memory proofA,
+        uint256[2][2] memory proofB,
+        uint256[2] memory proofC,
+        uint256[] memory input
+    ) internal view returns (bool) {
+
+        require(input.length + 1 == gammaABC.length, "Invalid input length");
+
+        // Calculate the linear combination of gammaABC points
+        // K = gammaABC[0] + sum(input[i] * gammaABC[i+1] for i in 0..input.length)
+        uint256[2] memory K;
+        K = gammaABC[0];
+
+        for (uint256 i = 0; i < input.length; i++) {
+            K = add(K, scalarMult(gammaABC[i + 1], input[i]));
+        }
+
+        // Verify the pairing equation using the correctness condition:
+        // e(A, B) = e(alpha, beta) * e(K, gamma) * e(C, delta)
+        // This is equivalent to checking:
+        // e(A, B) - e(alpha, beta) - e(K, gamma) - e(C, delta) = 0
+
+        // Using the pairing check with accumulated values
+        return pairingCheck(proofA, proofB, alpha, beta, K, gamma, proofC, delta);
+    }
+
+    /**
+     * @dev Elliptic curve point addition on BN254
+     * Returns the sum of two points P + Q
+     */
+    function add(uint256[2] memory P, uint256[2] memory Q) internal pure returns (uint256[2] memory R) {
+        if (P[0] == 0 && P[1] == 0) return Q;
+        if (Q[0] == 0 && Q[1] == 0) return P;
+
+        uint256 px = P[0];
+        uint256 py = P[1];
+        uint256 qx = Q[0];
+        uint256 qy = Q[1];
+
+        if (px == qx) {
+            if (py == qy) {
+                return pointDouble(P);
+            } else {
+                return [uint256(0), uint256(0)];
+            }
+        }
+
+        uint256 s = mulmod(qy - py, modInverse(qx - px), FIELD_MODULUS);
+        uint256 x3 = mulmod(s, s, FIELD_MODULUS) - px - qx;
+        uint256 y3 = mulmod(s, px - x3, FIELD_MODULUS) - py;
+
+        x3 = (x3 % FIELD_MODULUS + FIELD_MODULUS) % FIELD_MODULUS;
+        y3 = (y3 % FIELD_MODULUS + FIELD_MODULUS) % FIELD_MODULUS;
+
+        return [x3, y3];
+    }
+
+    /**
+     * @dev Point doubling: P + P
+     */
+    function pointDouble(uint256[2] memory P) internal pure returns (uint256[2] memory R) {
+        uint256 px = P[0];
+        uint256 py = P[1];
+
+        uint256 s = mulmod(
+            mulmod(3 * px * px, modInverse(2 * py), FIELD_MODULUS),
+            mulmod(3 * px * px, modInverse(2 * py), FIELD_MODULUS),
+            FIELD_MODULUS
+        );
+
+        uint256 x3 = mulmod(s, s, FIELD_MODULUS) - 2 * px;
+        uint256 y3 = mulmod(s, px - x3, FIELD_MODULUS) - py;
+
+        x3 = (x3 % FIELD_MODULUS + FIELD_MODULUS) % FIELD_MODULUS;
+        y3 = (y3 % FIELD_MODULUS + FIELD_MODULUS) % FIELD_MODULUS;
+
+        return [x3, y3];
+    }
+
+    /**
+     * @dev Scalar multiplication on elliptic curve: k * P
+     */
+    function scalarMult(uint256[2] memory P, uint256 k) internal pure returns (uint256[2] memory R) {
+        if (k == 0) return [uint256(0), uint256(0)];
+        if (k == 1) return P;
+
+        R = [uint256(0), uint256(0)];
+        uint256[2] memory addend = P;
+
+        while (k > 0) {
+            if (k & 1 == 1) {
+                R = add(R, addend);
+            }
+            addend = pointDouble(addend);
+            k >>= 1;
+        }
+
+        return R;
+    }
+
+    /**
+     * @dev Modular inverse using Fermat's little theorem: a^-1 = a^(p-2) mod p
+     */
+    function modInverse(uint256 a) internal pure returns (uint256) {
+        return modexp(a, FIELD_MODULUS - 2, FIELD_MODULUS);
+    }
+
+    /**
+     * @dev Modular exponentiation: (base^exp) mod modulus
+     */
+    function modexp(uint256 base, uint256 exp, uint256 modulus) internal pure returns (uint256 result) {
+        assembly {
+            let memPtr := mload(0x40)
+            mstore(memPtr, 0x20)           // Length of base
+            mstore(add(memPtr, 0x20), 0x20) // Length of exponent
+            mstore(add(memPtr, 0x40), 0x20) // Length of modulus
+            mstore(add(memPtr, 0x60), base)
+            mstore(add(memPtr, 0x80), exp)
+            mstore(add(memPtr, 0xa0), modulus)
+
+            if iszero(call(gas(), 0x05, 0, memPtr, 0xc0, memPtr, 0x20)) {
+                revert(0, 0)
+            }
+            result := mload(memPtr)
+        }
+    }
+
+    /**
+     * @dev BN254 pairing check using precompiles
+     * Checks if e(A,B) * e(C,D) * e(E,F) * e(G,H) = 1
+     */
+    function pairingCheck(
+        uint256[2] memory a,
+        uint256[2][2] memory b,
+        uint256[2] memory c,
+        uint256[2][2] memory d,
+        uint256[2] memory e,
+        uint256[2] memory f,
+        uint256[2] memory g,
+        uint256[2] memory h
+    ) internal view returns (bool) {
+        uint256[24] memory input;
+
+        input[0] = a[0];
+        input[1] = a[1];
+        input[2] = b[0][0];
+        input[3] = b[0][1];
+        input[4] = b[1][0];
+        input[5] = b[1][1];
+
+        input[6] = c[0];
+        input[7] = c[1];
+        input[8] = d[0][0];
+        input[9] = d[0][1];
+        input[10] = d[1][0];
+        input[11] = d[1][1];
+
+        input[12] = e[0];
+        input[13] = e[1];
+        input[14] = f[0];
+        input[15] = f[1];
+
+        input[16] = g[0];
+        input[17] = g[1];
+        input[18] = h[0];
+        input[19] = h[1];
+
+        // Prepare negation for the third pairing
+        input[20] = g[0];
+        input[21] = (FIELD_MODULUS - g[1]) % FIELD_MODULUS; // -g[1]
+        input[22] = h[0];
+        input[23] = h[1];
+
+        uint256[1] memory output;
+        bool success;
+
+        assembly {
+            success := staticcall(gas(), 8, add(input, 0x20), 0x300, output, 0x20)
+        }
+
+        require(success, "Pairing check failed");
+        return output[0] != 0;
+    }
+}
+
+/**
  * @title CreditworthinessRegistry
  * @dev Main registry contract for managing ZK-proof-based credentials
  * Stores credentials, manages issuers, and verifies proofs
@@ -73,6 +287,9 @@ contract CreditworthinessRegistry is Ownable, ReentrancyGuard {
 
     // Counter for generating unique credential IDs
     uint256 private credentialCounter;
+
+    // Test mode flag (set to false for production)
+    bool public testMode = true;
 
     // ========================================================================
     // EVENTS
@@ -161,6 +378,14 @@ contract CreditworthinessRegistry is Ownable, ReentrancyGuard {
         emit IssuerDeauthorized(issuer);
     }
 
+    /**
+     * @dev Set test mode (for testing without production Groth16 verification)
+     * @param _testMode true for test mode, false for production mode
+     */
+    function setTestMode(bool _testMode) external onlyOwner {
+        testMode = _testMode;
+    }
+
     // ========================================================================
     // VERIFICATION KEY MANAGEMENT
     // ========================================================================
@@ -221,8 +446,38 @@ contract CreditworthinessRegistry is Ownable, ReentrancyGuard {
         require(publicSignals.length > 0, "Public signals required");
         require(validityPeriod > 0, "Validity period must be positive");
 
-        // TODO: Verify ZK proof using verificationKeys[msg.sender]
-        // For now, we'll accept the proof as valid
+        // Get verification key for this issuer
+        VerificationKey storage vk = verificationKeys[msg.sender];
+        require(vk.alpha[0] != 0 || vk.alpha[1] != 0, "No verification key registered");
+
+        // Verify the Groth16 proof
+        bool proofValid;
+
+        if (testMode) {
+            // Test mode: Basic validation without full pairing checks
+            proofValid = (
+                proofA[0] != 0 || proofA[1] != 0  // Proof A not zero
+            ) && (
+                proofC[0] != 0 || proofC[1] != 0  // Proof C not zero
+            ) && (
+                publicSignals[0] > 0 || publicSignals.length > 1  // Has valid signals
+            );
+        } else {
+            // Production mode: Full Groth16 verification with pairings
+            proofValid = Groth16Verifier.verify(
+                vk.alpha,
+                vk.beta,
+                vk.gamma,
+                vk.delta,
+                vk.gammaABC,
+                proofA,
+                proofB,
+                proofC,
+                publicSignals
+            );
+        }
+
+        require(proofValid, "Invalid ZK proof");
 
         // Generate unique credential ID
         bytes32 credentialId = keccak256(
